@@ -251,7 +251,7 @@ class CoWinBook():
         if self.checkByPincode:
             response = self.session.get(f'https://cdn-api.co-vin.in/api/v2/appointment/sessions/calendarByPin?pincode={self.pin}&date={todayDate}')
         else: # Check by District
-            response = self.session.get(f'https://cdn-api.co-vin.in/api/v2/appointment/sessions/calendarByDistrict?district_id={self.pin}&date={todayDate}&vaccine=COVISHIELD')
+            response = self.session.get(f'https://cdn-api.co-vin.in/api/v2/appointment/sessions/calendarByDistrict?district_id={self.pin}&date={todayDate}')
         
         self.requestStatus = response.status_code
 
