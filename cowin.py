@@ -1,42 +1,50 @@
-from apscheduler.schedulers.blocking import BlockingScheduler
-from bs4 import BeautifulSoup
-from datetime import datetime
-import subprocess
-import requests
-import hashlib
-import base64
-import time
-import json
-import fire
-import sys
-import re
-import os
+try:
+    import schedule
+    from bs4 import BeautifulSoup
+    from datetime import datetime
+    import subprocess
+    import requests
+    import hashlib
+    import base64
+    import time
+    import json
+    import fire
+    import sys
+    import re
+    import os
+except ImportError:
+    print("First run requirements instaling command")
+    print("pip install -r requirements.txt")
+    exit()
 
 OTP_SITE_URL = None
+OTP_VALID_DURATION_SECONDS = 180
 ''' 
-Add Worker Domain here example : https://db.domain.workers.dev
+Add Worker Domain here in Double Quore example : "https://db.domain.workers.dev"
 Check this :  https://github.com/truroshan/CloudflareCoWinDB
 '''
 
-scheduler = BlockingScheduler()
+# scheduler = BlockingScheduler()
 
 def line_break(): print("-"*25)
 
-def clear_screen(): os.system("clear")
-
+def clear_screen(): os.system('clear' if os.name =='posix' else 'cls')
+      
 class CoWinBook():
 
     def init(
-        self,
-        mobile_no,
-        pin = "Not Passed",
-        age = 18 ,
-        vaccine = "ANY",
-        dose = 1,
-        otp = 'a',
-        time = 30,
-        bookToday = 1,
-        relogin = None ):
+        self, 
+        mobile_no, # --m
+        pin = "Not Passed", # --p
+        age = 18 , # --a
+        vaccine = "ANY", # --v
+        dose = 1, # --d
+        otp = 'a',  # --o
+        time = 30, # --t
+        bookToday = 1, # --b
+        fee_type = "BOTH", # --f
+        relogin = None  # --r
+        ):
 
         self.mobile_no = str(mobile_no)
         if relogin and os.path.exists(self.mobile_no): os.remove(self.mobile_no)
@@ -54,6 +62,7 @@ class CoWinBook():
 
         # Vaccination Center id and Session id for Slot Booking
         self.vaccine = vaccine.upper()
+        self.vacc_fee_type = fee_type.upper()
         self.vacc_center = None
         self.vacc_session = None
         self.slot_time = None
@@ -95,7 +104,7 @@ class CoWinBook():
 
         bottomBanner =  "for Today and Day After 📆 ..." if self.bookToday == 0 else "for Tomorrow and Day After 📆 ..."
         print(f" 📍 {self.pin} 💉 {age}+ ⌛️ {TIME} Seconds")
-        print(f" 📲 xxxx{self.mobile_no[7:]} 💉 {self.vaccine} (Dose :{self.dose})")
+        print(f" 📲 XXXX{self.mobile_no[7:]} 💉 {self.vaccine} (Dose :{self.dose})")
         print(f"CoWin Auto Slot Booking 🔃\n{bottomBanner}")
         line_break()
 
@@ -131,18 +140,22 @@ class CoWinBook():
             self.session.headers.update({
                     'Authorization': 'Bearer {}'.format(self.bearerToken)
                 })
-            self.session.get('https://cdn-api.co-vin.in/api/v2/appointment/beneficiaries').json()
+            self.fetch_beneficiaries().json()
         except (FileNotFoundError,json.decoder.JSONDecodeError):
             self.login_cowin()
         
     def checkToken(self):
         # Pause job of Checking Slot
-        scheduler.pause_job('slot')
+        # scheduler.pause_job('slot')
         
-        self.getSession()
+        response = self.fetch_beneficiaries()
+        try:
+            response.json()
+        except json.decoder.JSONDecodeError:
+            self.login_cowin()
 
         # Resume job of Checking Slot
-        scheduler.resume_job('slot')
+        # scheduler.resume_job('slot')
 
     # Login to selfregistration.cowin.gov.in/
     def login_cowin(self):
@@ -154,11 +167,14 @@ class CoWinBook():
 
         response = self.session.post('https://cdn-api.co-vin.in/api/v2/auth/generateMobileOTP',data=self.get_data())
 
-        if self.otp == 's': requests.delete(f"{OTP_SITE_URL}/{self.mobile_no}")
+        if self.otp == 's' and OTP_SITE_URL is not None: requests.delete(f"{OTP_SITE_URL}/{self.mobile_no}")
 
         otpSha265 = self.get_otp()
-
-        txn_id = response.json()['txnId']
+        try:
+            txn_id = response.json()['txnId']
+        except json.decoder.JSONDecodeError:
+            print("Wrong OTP Entered")
+            return
 
         self.data = {
                         "otp":otpSha265,
@@ -179,28 +195,33 @@ class CoWinBook():
         
         otp_fetching_mode = ""
         if self.otp == 'a':
-            otp_fetching_mode = 'AutoMode'
+            otp_fetching_mode = 'Auto Mode'
         elif self.otp == 's':
-            otp_fetching_mode = 'SiteMode'
+            otp_fetching_mode = 'Site Mode'
         else:
-            otp_fetching_mode = "ManualMode"
+            otp_fetching_mode = "Manual Mode"
 
         print(f"OTP Sent ({otp_fetching_mode}) 📲 ... ")
 
         otp = ""
 
         try:    
-            curr_msg = self.get_msg().get("body")
+            curr_msg = self.get_msg()
+            curr_msg_body = curr_msg.get("body")
 
             for i in reversed(range(30)):
             
-                last_msg = self.get_msg().get("body",'')
+                last_msg = self.get_msg()
+                last_msg_body = last_msg.get("body",'')
             
                 print(f'Waiting for OTP {i} sec')
-                sys.stdout.write("\033[F")
+                self.set_cursor()
 
-                if curr_msg != last_msg and "cowin" in last_msg.lower():
-                    otp = re.findall("(\d{6})",last_msg)[0]
+                d1 = datetime.strptime(last_msg.get("received","2019-12-01 09:09:09"), '%Y-%m-%d %H:%M:%S')
+                d2 = datetime.now() # current date and time
+                diff = (d2 - d1).total_seconds()
+                if (curr_msg_body != last_msg_body and "cowin" in last_msg_body.lower()) or diff <= OTP_VALID_DURATION_SECONDS:
+                    otp = re.findall("(\d{6})",last_msg_body)[0]
                     print("\nOTP Recieved : ",otp)
                     break
 
@@ -227,14 +248,15 @@ class CoWinBook():
                 msg = json.loads(msg)[0]
                 return msg
             except KeyError:
-                raise Exception("Install Termux:API 0.31 Version for AutoMode  ")
-        # Get OTP using DB hosted on Cloudflare and Attached with https://play.google.com/store/apps/details?id=com.gawk.smsforwarder
+                raise Exception("Install Termux:API from FDroid for Auto Mode  ")
+        
+        # Get OTP using DB hosted on Cloudflare and Configure with https://play.google.com/store/apps/details?id=com.gawk.smsforwarder
         elif self.otp == 's':
 
             if OTP_SITE_URL is None:
                 raise Exception("First Setup DB on Cloudflare \nhttps://github.com/truroshan/CloudflareCoWinDB ")
 
-            res = requests.get(f"{OTP_SITE_URL}/{self.mobile_no}",timeout=3).json()
+            res = requests.get(f"{OTP_SITE_URL}/{self.mobile_no}").json()
                 
             if res.get("status"):
                 msg['body'] = res.get('data').get("message")
@@ -255,7 +277,7 @@ class CoWinBook():
         
         self.requestStatus = response.status_code
 
-        if response.ok:
+        if response.status_code == 200:
             self.check_slot(response.json())
         elif response.status_code == 401:
             print("Re-login Account : " + datetime.now().strftime("%H:%M:%S") + " 🤳")
@@ -265,24 +287,26 @@ class CoWinBook():
     # Check Slot availability 
     def check_slot(self,response):
 
-        for center in response.get('centers',[]):
+        centers = response.get('centers',[])
+        for center in centers:
             
             for session in center.get('sessions')[self.bookToday:]:
                 
                 self.vacc_center = center.get('center_id')
                 self.vacc_session = session.get("session_id")
-                self.slot_time = session.get('slots')[0]
 
                 center_name = center.get('name')
                 capacity = session.get(f'available_capacity_dose{self.dose}')
                 session_date = session.get('date')
                 
-                vaccine_name = session.get('vaccine') + "ANY"
+                vaccine_name = session.get('vaccine')
 
                 if capacity > 1 and \
-                    self.vaccine in vaccine_name and \
+                    (self.vaccine in vaccine_name or self.vaccine == "ANY") and \
                     session.get('min_age_limit') == self.age and \
                     center.get('center_id') in  self.center_id:
+
+                    self.slot_time = session.get('slots')[0]
 
                     MSG = f'💉 {capacity} #{vaccine_name} / {session_date} / {center_name} 📍{self.pin}'
 
@@ -291,13 +315,13 @@ class CoWinBook():
                 
                     BOOKED = self.book_slot()
                     if BOOKED:
-                        scheduler.shutdown(wait=False)
+                        # scheduler.shutdown(wait=False)
                         print("Shutting Down CoWin Script 👩‍💻 ")
-                        return
+                        exit()
 
         # When last Checked
-        print(f"Last Checked ✅ : " + datetime.now().strftime("%H:%M:%S") + " 🕐")
-        sys.stdout.write("\033[F")
+        print(f"Last Checked {self.requestStatus} ✅ : " + datetime.now().strftime("%H:%M:%S") + " 🕐")
+        self.set_cursor()
 
     # Get Solved Captcha in String
     def get_captcha(self):
@@ -362,6 +386,8 @@ class CoWinBook():
             return True
         elif status == 409:
             print("This vaccination center is completely booked for the selected date 😥")
+        elif status == 400:
+            print("Minimum age criteria is 45 years  for this center")
         elif status == 401:
             self.login_cowin()
             self.book_slot()
@@ -404,32 +430,63 @@ class CoWinBook():
         clear_screen()
         return index
 
-    # Select Center for Vaccination
-    def select_center(self):
-
+    def fetch_center(self):
         if self.checkByPincode:
             response = self.session.get(
                 f'https://cdn-api.co-vin.in/api/v2/appointment/sessions/calendarByPin?pincode={self.pin}&date={self.todayDate}'
-                ).json()
+                )
         else: # Check by District
             response = self.session.get(
                 f'https://cdn-api.co-vin.in/api/v2/appointment/sessions/calendarByDistrict?district_id={self.pin}&date={self.todayDate}'
-                ).json()
+                )
+        return response
+
+    # Select Center for Vaccination
+    def select_center(self):
+        response = self.fetch_center()
+
+        while response.status_code != 200:
+            print(f'Trying to fetch center detail. Please wait...')
+            self.set_cursor()
+            time.sleep(5)
+            response = self.fetch_center()
+        clear_screen()
+        
+        response = response.json()
 
         CENTERS = {}
         INDEX_S = []
+        
+        if not response.get('centers'):
+            print("No Centers Available at this location")
+            print("Shutting Down CoWin Script 👩‍💻 ")
+            exit()
 
         print(f"Select Vaccination Center ({self.pin}) 💉 \n")
+
         counter = 1
         for center in response.get('centers',[]):
+            vaccine_fee_type =  center.get("fee_type").upper()
+            vaccine__fee_emoji = '🆓' if "FREE" in vaccine_fee_type else '💰'
+            
             for session in center.get('sessions'):
-                if session.get('min_age_limit') == self.age:
-                    print(f'{counter} : {center.get("name")}')
+                vaccine_name = session.get("vaccine")
+                
+                if session.get('min_age_limit') == self.age \
+                    and (self.vaccine in vaccine_name or self.vaccine == 'ANY') \
+                    and (self.vacc_fee_type in vaccine_fee_type or self.vacc_fee_type == "BOTH" ):
+
+                    print(f'{counter} : {center.get("name")} {vaccine__fee_emoji}')
                     CENTERS[counter] = center.get('center_id')
                     INDEX_S.append(counter)
                     counter += 1
                     break
             
+        if counter == 1:
+            # clear_screen()
+            print(f"No Center available Vaccine : ( 💉{self.vaccine}) Fee Type : ({self.vacc_fee_type}).")
+            self.shutting_down()
+            exit()
 
         print()
         line_break()
@@ -439,7 +496,10 @@ class CoWinBook():
     * Select Mutiple with Space
         input : 1 2 3 4
     * Select All Center
-        Hit Enter without Input\n""")
+        Hit Enter without Input
+    
+   **pass --f paid or free
+   **pass --v vacc_name \n""")
 
         line_break()
 
@@ -456,10 +516,20 @@ class CoWinBook():
                 CENTER_ID.append(CENTERS.get(int(index)))
         self.center_id = CENTER_ID
 
+    def fetch_beneficiaries(self):
+        return self.session.get('https://cdn-api.co-vin.in/api/v2/appointment/beneficiaries')
+
     # Select User to Book Slot
     def select_beneficiaries(self):
 
-        response = self.session.get('https://cdn-api.co-vin.in/api/v2/appointment/beneficiaries').json()
+        response = self.fetch_beneficiaries()
+        while response.status_code != 200:
+            print(f'Please wait...')
+            self.set_cursor()
+            time.sleep(5)
+            response = self.fetch_beneficiaries()
+        
+        response = response.json()
 
         USERS = {}
         INDEX_S = []
@@ -467,8 +537,8 @@ class CoWinBook():
         print(f"Select User for Vaccination 👩‍👦‍👦 \n")
 
         if not response.get('beneficiaries',[]):
-            print("No user added in beneficiaries")
-            return
+            print("No beneficiaries added  in Account")
+            exit()
 
         counter = 1
         for user in response.get('beneficiaries'):
@@ -477,6 +547,13 @@ class CoWinBook():
                 USERS[counter] = user.get('beneficiary_reference_id')
                 INDEX_S.append(counter)
                 counter += 1
+
+
+        if counter == 1:
+            # clear_screen()
+            print(f"No beneficiaries available for Dose {self.dose}.")
+            self.shutting_down()
+            exit()
 
         print()
         line_break()
@@ -504,6 +581,12 @@ class CoWinBook():
 
         self.user_id = USER_ID
 
+    def shutting_down(self):
+        print("Shutting Down CoWin Script 👩‍💻 ")
+
+    def set_cursor(self):
+        sys.stdout.write("\033[F")
+
 
 if __name__ == '__main__':
 
@@ -514,9 +597,15 @@ if __name__ == '__main__':
     fire.Fire(cowin.init)
  
     # Check for Slot
-    scheduler.add_job(cowin.book_now, 'interval',id = "slot",seconds = TIME, misfire_grace_time=2)
+    # scheduler.add_job(cowin.book_now, 'interval',id = "slot",seconds = TIME, misfire_grace_time=2,replace_existing=True)
+    schedule.every(TIME).seconds.do(cowin.book_now)
     
     # Check Token every 3 min
-    scheduler.add_job(cowin.checkToken, 'cron',id ="login", minute = f'*/3',misfire_grace_time= 30)
+    # scheduler.add_job(cowin.checkToken, 'cron',id ="login", minute = f'*/3',misfire_grace_time= 30)
+    schedule.every(3).minutes.do(cowin.checkToken)
 
-    scheduler.start()
+    # scheduler.start()
+
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
